@@ -1,12 +1,18 @@
 package io.github.jamsesso.jsonlogic.ast;
 
 import com.google.gson.*;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
+
+import java.io.IOException;
+import java.io.StringReader;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 public final class JsonLogicParser {
+  private static final int MAX_STREAMING_DEPTH = 128;
   private static final JsonParser PARSER = new JsonParser();
 
   private JsonLogicParser() {
@@ -15,12 +21,61 @@ public final class JsonLogicParser {
 
   public static JsonLogicNode parse(String json) throws JsonLogicParseException {
     try {
+      JsonReader reader = new JsonReader(new StringReader(json));
+      reader.setLenient(true);
+      JsonLogicNode node = readNode(reader, 0);
+      reader.setLenient(false);
+      if (node != null && (node == JsonLogicNull.NULL || reader.peek() == JsonToken.END_DOCUMENT)) {
+        return node;
+      }
+    } catch (IOException | JsonSyntaxException | NumberFormatException e) {
+      // Replay with the original parser for its exact exception, cause and JSON path.
+    }
+    try {
       return parse(PARSER.parse(json));
     } catch (JsonLogicParseException e) {
       e.prependPartialJsonPath("$");
       throw e;
     } catch (JsonSyntaxException e) {
       throw new JsonLogicParseException(e, "$");
+    }
+  }
+
+  private static JsonLogicNode readNode(JsonReader reader, int depth) throws IOException {
+    if (depth >= MAX_STREAMING_DEPTH) {
+      return null;
+    }
+    switch (reader.peek()) {
+      case NULL:
+        reader.nextNull();
+        return JsonLogicNull.NULL;
+      case BOOLEAN:
+        return reader.nextBoolean() ? JsonLogicBoolean.TRUE : JsonLogicBoolean.FALSE;
+      case STRING:
+        return new JsonLogicString(reader.nextString());
+      case NUMBER:
+        return new JsonLogicNumber(PARSER.parse(reader).getAsNumber());
+      case BEGIN_ARRAY:
+        reader.beginArray();
+        List<JsonLogicNode> elements = new ArrayList<>();
+        while (reader.hasNext()) {
+          JsonLogicNode element = readNode(reader, depth + 1);
+          if (element == null) return null;
+          elements.add(element);
+        }
+        reader.endArray();
+        return new JsonLogicArray(elements);
+      case BEGIN_OBJECT:
+        reader.beginObject();
+        if (!reader.hasNext()) return null;
+        String key = reader.nextName();
+        JsonLogicNode argument = readNode(reader, depth + 1);
+        // Gson resolves duplicate keys and validates the whole document before rule validation.
+        if (argument == null || reader.hasNext()) return null;
+        reader.endObject();
+        return operation(key, argument);
+      default:
+        return null;
     }
   }
 
@@ -78,7 +133,6 @@ public final class JsonLogicParser {
 
     String key = object.keySet().stream().findAny().get();
     JsonLogicNode argumentNode;
-    JsonLogicArray arguments;
 
     try {
       argumentNode = parse(object.get(key));
@@ -87,6 +141,11 @@ public final class JsonLogicParser {
       throw e;
     }
 
+    return operation(key, argumentNode);
+  }
+
+  private static JsonLogicNode operation(String key, JsonLogicNode argumentNode) {
+    JsonLogicArray arguments;
     // Always coerce single-argument operations into a JsonLogicArray with a single element.
     if (argumentNode instanceof JsonLogicArray) {
       arguments = (JsonLogicArray) argumentNode;
