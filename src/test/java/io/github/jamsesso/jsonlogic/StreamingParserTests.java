@@ -38,6 +38,37 @@ public class StreamingParserTests {
       assertTrue(error.getCause().getCause() instanceof NumberFormatException);
     }
   }
+  @Test public void malformedDocumentsPreserveGsonDiagnostics() throws Exception {
+    String[] documents = {
+      "{\"if\":[true,1,0]]", "[{\"var\":\"a\"}", "[1] trailing", "/* unfinished",
+      "[\n{\"var\":\"\\u00zz\"}]", "{\"var\": \"unterminated"
+    };
+    for (String document : documents) {
+      Throwable expected;
+      try {
+        new com.google.gson.JsonParser().parse(document);
+        throw new AssertionError("expected invalid JSON");
+      } catch (com.google.gson.JsonSyntaxException e) {
+        expected = e;
+      }
+      try {
+        JsonLogicParser.parse(document);
+        fail(document);
+      } catch (JsonLogicParseException e) {
+        assertEquals(document, "$", e.getJsonPath());
+        Throwable actual = e.getCause();
+        while (expected != null) {
+          assertNotNull(document, actual);
+          assertEquals(document, expected.getClass(), actual.getClass());
+          assertEquals(document, expected.getMessage(), actual.getMessage());
+          expected = expected.getCause();
+          actual = actual.getCause();
+        }
+        assertNull(document, actual);
+      }
+    }
+  }
+
   @Test public void acceptsLegacyLenientSyntax() throws Exception {
     assertEquals(3.0,new JsonLogic().apply("{/* legacy comment */ '+':[1,2]}",null));
     assertSame(JsonLogicNull.NULL,JsonLogicParser.parse("   "));

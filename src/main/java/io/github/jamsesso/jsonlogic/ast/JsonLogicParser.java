@@ -3,7 +3,9 @@ package io.github.jamsesso.jsonlogic.ast;
 import com.google.gson.*;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
+import com.google.gson.stream.MalformedJsonException;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.StringReader;
 
@@ -21,23 +23,40 @@ public final class JsonLogicParser {
 
   public static JsonLogicNode parse(String json) throws JsonLogicParseException {
     try {
-      JsonReader reader = new JsonReader(new StringReader(json));
-      reader.setLenient(true);
-      JsonLogicNode node = readNode(reader, 0);
-      reader.setLenient(false);
-      if (node != null && (node == JsonLogicNull.NULL || reader.peek() == JsonToken.END_DOCUMENT)) {
-        return node;
-      }
-    } catch (IOException | JsonSyntaxException | NumberFormatException e) {
-      // Replay with the original parser for its exact exception, cause and JSON path.
-    }
-    try {
-      return parse(PARSER.parse(json));
+      JsonLogicNode node = readDocument(json);
+      return node != null ? node : parse(PARSER.parse(json));
     } catch (JsonLogicParseException e) {
       e.prependPartialJsonPath("$");
       throw e;
     } catch (JsonSyntaxException e) {
       throw new JsonLogicParseException(e, "$");
+    }
+  }
+
+  private static JsonLogicNode readDocument(String json) {
+    JsonReader reader = new JsonReader(new StringReader(json));
+    reader.setLenient(true);
+    try {
+      boolean empty = true;
+      JsonLogicNode node;
+      try {
+        reader.peek();
+        empty = false;
+        node = readNode(reader, 0);
+      } catch (EOFException e) {
+        if (empty) return JsonLogicNull.NULL;
+        throw new JsonSyntaxException(e);
+      }
+
+      reader.setLenient(false);
+      if (node != null && node != JsonLogicNull.NULL && reader.peek() != JsonToken.END_DOCUMENT) {
+        throw new JsonSyntaxException("Did not consume the entire document.");
+      }
+      return node;
+    } catch (MalformedJsonException | NumberFormatException e) {
+      throw new JsonSyntaxException(e);
+    } catch (IOException e) {
+      throw new JsonIOException(e);
     }
   }
 
